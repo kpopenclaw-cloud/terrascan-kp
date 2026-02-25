@@ -1,0 +1,29 @@
+name: Terraform Multi-Agent Review
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Terrascan
+        run: |
+          curl -L https://github.com/tenable/terrascan/releases/latest/download/terrascan_Linux_x86_64.tar.gz | tar -xz
+          sudo mv terrascan /usr/local/bin/
+
+      - name: Run Scan
+        run: terrascan scan -t terraform -o json > scan.json
+
+      - name: Upload
+        run: aws s3 cp scan.json s3://YOUR_BUCKET/${{ github.event.number }}.json
+
+      - name: Start Step Function
+        run: |
+          aws stepfunctions start-execution \
+          --state-machine-arn YOUR_SFN_ARN \
+          --input '{"pr_number": "${{ github.event.number }}"}'

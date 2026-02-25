@@ -17,7 +17,7 @@ jobs:
           sudo mv terrascan /usr/local/bin/
 
       - name: Run Scan
-        run: terrascan scan -t terraform -o json > scan.json
+        run: terrascan scan -i terraform -o json > scan.json
 
       - name: Upload
         run: aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json

@@ -20,10 +20,10 @@ jobs:
         run: terrascan scan -t terraform -o json > scan.json
 
       - name: Upload
-        run: aws s3 cp scan.json s3://YOUR_BUCKET/${{ github.event.number }}.json
+        run: aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json
 
       - name: Start Step Function
         run: |
           aws stepfunctions start-execution \
-          --state-machine-arn YOUR_SFN_ARN \
+          --state-machine-arn arn:aws:states:us-east-1:998948478488:stateMachine:tf-review-state-machine \
           --input '{"pr_number": "${{ github.event.number }}"}'

@@ -13,8 +13,7 @@ jobs:
 
       - name: Install Terrascan
         run: |
-          curl -L https://github.com/tenable/terrascan/releases/latest/download/terrascan_Linux_x86_64.tar.gz | tar -xz
-          sudo mv terrascan /usr/local/bin/
+          curl -L https://github.com/tenable/terrascan/releases/latest/download/install.sh | bash
 
       - name: Run Scan
         run: terrascan scan -t terraform -o json > scan.json

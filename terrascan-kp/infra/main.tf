@@ -1,3 +1,37 @@
+############################
+# STEP FUNCTION STATE MACHINE
+############################
+
+resource "aws_sfn_state_machine" "review_state_machine" {
+  name     = "tf-review-state-machine"
+  role_arn = aws_iam_role.step_role.arn
+  definition = jsonencode({
+    Comment = "Review workflow for Terraform PRs"
+    StartAt = "AgentSecurity"
+    States = {
+      AgentSecurity = {
+        Type = "Task"
+        Resource = "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:agent_security"
+        Next = "AgentCost"
+      }
+      AgentCost = {
+        Type = "Task"
+        Resource = "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:agent_cost"
+        Next = "AgentIAM"
+      }
+      AgentIAM = {
+        Type = "Task"
+        Resource = "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:agent_iam"
+        Next = "AgentGovernance"
+      }
+      AgentGovernance = {
+        Type = "Task"
+        Resource = "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:agent_governance"
+        End = true
+      }
+    }
+  })
+}
 provider "aws" {
   region = "us-east-1"
 }

@@ -31,29 +31,28 @@ jobs:
         continue-on-error: true
 
 
+      - name: Render Terrascan Results for PR
+        id: terrascan_results
+        run: |
+          echo '## 🛡️ **Terrascan Results**' > terrascan_comment.txt
+          echo '' >> terrascan_comment.txt
+          echo '<details><summary>Show full scan results</summary>' >> terrascan_comment.txt
+          echo '' >> terrascan_comment.txt
+          echo '\`\`\`json' >> terrascan_comment.txt
+          cat scan.json >> terrascan_comment.txt
+          echo '\`\`\`' >> terrascan_comment.txt
+          echo '</details>' >> terrascan_comment.txt
+          if jq -e '.results.violations | length > 0' scan.json > /dev/null; then
+            echo '### ❌ Violations Found:' >> terrascan_comment.txt
+            jq -r '.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n"' scan.json >> terrascan_comment.txt
+          else
+            echo '✅ No violations found.' >> terrascan_comment.txt
+          fi
       - name: Comment Terrascan Results on PR
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{ github.event.number }}
-          body: |
-            ## 🛡️ **Terrascan Results**
-          
-            <details>
-            <summary>Show full scan results</summary>
-          
-            ```json
-            $(cat scan.json)
-            ```
-            </details>
-          
-            $(jq -r '
-              if .results.violations then
-                "### ❌ Violations Found:\n" +
-                (.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n")
-              else
-                "✅ No violations found."
-              end
-            ' scan.json)
+          body-path: terrascan_comment.txt
        
 
 
@@ -61,7 +60,7 @@ jobs:
         run: aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json
 
       - name: Upload SARIF to GitHub Code Scanning
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: scan.sarif
           category: terrascan

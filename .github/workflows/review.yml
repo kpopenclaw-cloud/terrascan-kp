@@ -39,6 +39,27 @@ jobs:
           cp response.json agent_output.json
 
 
+      - name: Format Agent Output for PR
+        # id removed to avoid duplicate
+        run: |
+          echo '## 🛡️ Terrascan & AI Agent Review' > pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '### 💰 Cost Analysis' >> pr_comment.txt
+          echo "- **Estimate:** $(jq -r '.cost.estimate // \"N/A\"' agent_output.json) $(jq -r '.cost.currency // \"\"' agent_output.json)" >> pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '### 🔐 IAM Analysis' >> pr_comment.txt
+          echo "- **Risks:** $(jq -r '.iam.risks | join(\", \") // \"None\"' agent_output.json)" >> pr_comment.txt
+          echo "- **Score:** $(jq -r '.iam.score // \"N/A\"' agent_output.json)" >> pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '### 🛡️ Security Analysis' >> pr_comment.txt
+          echo "- **Risk Score:** $(jq -r '.security.risk_score // \"N/A\"' agent_output.json)" >> pr_comment.txt
+          echo "- **Critical:** $(jq -r '.security.critical // \"N/A\"' agent_output.json)" >> pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '---' >> pr_comment.txt
+          echo '### 🏛️ Governance Verdict' >> pr_comment.txt
+          echo "- **Verdict:** $(jq -r '.governance.verdict // \"N/A\"' agent_output.json)" >> pr_comment.txt
+          echo "- **Reason:** $(jq -r '.governance.reason // \"N/A\"' agent_output.json)" >> pr_comment.txt
+
       - name: Comment Results on PR
         uses: peter-evans/create-or-update-comment@v3
         with:

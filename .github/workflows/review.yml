@@ -35,35 +35,36 @@ jobs:
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{ github.event.number }}
-            body: |
-              ## 🛡️ **Terrascan Results**
-            
-              <details>
-              <summary>Show full scan results</summary>
-            
-              ```json
-              $(cat scan.json)
-              ```
-              </details>
-            
-              $(jq -r '
-                if .results.violations then
-                  "### ❌ Violations Found:\n" +
-                  (.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n")
-                else
-                  "✅ No violations found."
-                end
-              ' scan.json)
+          body: |
+            ## 🛡️ **Terrascan Results**
+          
+            <details>
+            <summary>Show full scan results</summary>
+          
+            ```json
+            $(cat scan.json)
+            ```
+            </details>
+          
+            $(jq -r '
+              if .results.violations then
+                "### ❌ Violations Found:\n" +
+                (.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n")
+              else
+                "✅ No violations found."
+              end
+            ' scan.json)
        
+
 
       - name: Upload
         run: aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json
 
-        - name: Upload SARIF to GitHub Code Scanning
-          uses: github/codeql-action/upload-sarif@v2
-          with:
-            sarif_file: scan.sarif
-            category: terrascan
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: scan.sarif
+          category: terrascan
 
       - name: Start Step Function
         run: |

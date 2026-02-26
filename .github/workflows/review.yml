@@ -26,9 +26,13 @@ jobs:
           terrascan version
       - name: Run Scan
         run: |
-             terrascan scan -i terraform -o json > scan.json
-             terrascan scan -i terraform -o sarif > scan.sarif
-        continue-on-error: true
+          terrascan scan -i terraform -o json > scan.json
+          terrascan scan -i terraform -o sarif > scan.sarif
+          if [ ! -f scan.sarif ]; then
+            echo "scan.sarif not generated! Failing the workflow."
+            exit 1
+          fi
+        continue-on-error: false
 
 
       - name: Render Terrascan Results for PR
@@ -65,8 +69,42 @@ jobs:
           sarif_file: scan.sarif
           category: terrascan
 
-      - name: Start Step Function
+      - name: Start Step Function Execution
+        id: start_sf
         run: |
-          aws stepfunctions start-execution \
-          --state-machine-arn arn:aws:states:us-east-1:998948478488:stateMachine:tf-review-state-machine \
-          --input '{"pr_number": "${{ github.event.number }}"}'
+          exec_arn=$(aws stepfunctions start-execution \
+            --state-machine-arn arn:aws:states:us-east-1:998948478488:stateMachine:tf-review-state-machine \
+            --input '{"pr_number": "${{ github.event.number }}"}' \
+            --query 'executionArn' --output text)
+          echo "execution_arn=$exec_arn" >> $GITHUB_OUTPUT
+
+      - name: Wait for Step Function to Complete
+        id: wait_sf
+        run: |
+          exec_arn="${{ steps.start_sf.outputs.execution_arn }}"
+          status="RUNNING"
+          for i in {1..60}; do
+            status=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'status' --output text)
+            if [[ "$status" != "RUNNING" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ "$status" != "SUCCEEDED" ]]; then
+            echo "Step Function execution failed or timed out: $status"
+            exit 1
+          fi
+          output=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'output' --output text)
+          echo "$output" > agent_output.json
+          echo "output_path=agent_output.json" >> $GITHUB_OUTPUT
+
+      - name: Comment Agent Output on PR
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.number }}
+          body: |
+            ## 🤖 **Agent Output**
+            
+            ```json
+            ${{ steps.wait_sf.outputs.output_path && fromJson(steps.wait_sf.outputs.output_path) || 'No output found.' }}
+            ```

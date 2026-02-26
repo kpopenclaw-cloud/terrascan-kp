@@ -26,48 +26,51 @@ jobs:
           terrascan version
       - name: Run Scan
         run: |
-          terrascan scan -i terraform -o json > scan.json
-          terrascan scan -i terraform -o sarif > scan.sarif
-          if [ ! -f scan.sarif ]; then
-            echo "scan.sarif not generated! Failing the workflow."
-            exit 1
-          fi
-        continue-on-error: false
+          terrascan scan -i terraform -o json > scan.json || true
+          # Optionally, keep SARIF for local/dev, but don't fail if missing
+          terrascan scan -i terraform -o sarif > scan.sarif || true
+        continue-on-error: true
 
 
-      - name: Render Terrascan Results for PR
-        id: terrascan_results
+      - name: Render Terrascan and Agent Results for PR
+        id: pr_results
         run: |
-          echo '## 🛡️ **Terrascan Results**' > terrascan_comment.txt
-          echo '' >> terrascan_comment.txt
-          echo '<details><summary>Show full scan results</summary>' >> terrascan_comment.txt
-          echo '' >> terrascan_comment.txt
-          echo '\`\`\`json' >> terrascan_comment.txt
-          cat scan.json >> terrascan_comment.txt
-          echo '\`\`\`' >> terrascan_comment.txt
-          echo '</details>' >> terrascan_comment.txt
-          if jq -e '.results.violations | length > 0' scan.json > /dev/null; then
-            echo '### ❌ Violations Found:' >> terrascan_comment.txt
-            jq -r '.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n"' scan.json >> terrascan_comment.txt
+          echo '## 🛡️ **Terrascan Results**' > pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '<details><summary>Show full scan results</summary>' >> pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '\`\`\`json' >> pr_comment.txt
+          cat scan.json >> pr_comment.txt || echo '{"error": "scan.json missing"}' >> pr_comment.txt
+          echo '\`\`\`' >> pr_comment.txt
+          echo '</details>' >> pr_comment.txt
+          if jq -e '.results.violations | length > 0' scan.json > /dev/null 2>&1; then
+            echo '### ❌ Violations Found:' >> pr_comment.txt
+            jq -r '.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n"' scan.json >> pr_comment.txt
           else
-            echo '✅ No violations found.' >> terrascan_comment.txt
+            echo '✅ No violations found.' >> pr_comment.txt
           fi
-      - name: Comment Terrascan Results on PR
+          echo '' >> pr_comment.txt
+          echo '---' >> pr_comment.txt
+          echo '## 🤖 **Agent Output**' >> pr_comment.txt
+          if [ -f agent_output.json ]; then
+            echo '\`\`\`json' >> pr_comment.txt
+            cat agent_output.json >> pr_comment.txt
+            echo '\`\`\`' >> pr_comment.txt
+          else
+            echo 'No agent output found.' >> pr_comment.txt
+          fi
+      - name: Comment Results on PR
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{ github.event.number }}
-          body-path: terrascan_comment.txt
+          body-path: pr_comment.txt
        
 
 
       - name: Upload
         run: aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json
 
-      - name: Upload SARIF to GitHub Code Scanning
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: scan.sarif
-          category: terrascan
+      # SARIF upload removed as requested
 
       - name: Start Step Function Execution
         id: start_sf

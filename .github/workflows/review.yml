@@ -69,7 +69,9 @@ jobs:
 
 
       - name: Upload
-        run: aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json
+        run: |
+          aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json
+          echo "Scan uploaded to S3 for PR ${{ github.event.number }}"
 
       # SARIF upload removed as requested
 
@@ -81,6 +83,7 @@ jobs:
             --input '{"pr_number": "${{ github.event.number }}"}' \
             --query 'executionArn' --output text)
           echo "execution_arn=$exec_arn" >> $GITHUB_OUTPUT
+          echo "Step Function started for PR ${{ github.event.number }} with ARN $exec_arn"
 
       - name: Wait for Step Function to Complete
         id: wait_sf

@@ -19,7 +19,6 @@ jobs:
 
       - name: Install Terrascan
         run: |
-
           curl -L https://github.com/tenable/terrascan/releases/download/v1.18.4/terrascan_1.18.4_Linux_x86_64.tar.gz -o terrascan.tar.gz
           tar -xzf terrascan.tar.gz
           sudo mv terrascan /usr/local/bin/
@@ -27,38 +26,39 @@ jobs:
       - name: Run Scan
         run: |
           terrascan scan -i terraform -o json > scan.json || true
-          # Optionally, keep SARIF for local/dev, but don't fail if missing
           terrascan scan -i terraform -o sarif > scan.sarif || true
         continue-on-error: true
-
-
-      - name: Render Terrascan and Agent Results for PR
-        id: pr_results
+      - name: Invoke Terraform AI Review Lambda
+        id: ai_review
         run: |
-          echo '## 🛡️ **Terrascan Results**' > pr_comment.txt
+          aws lambda invoke \
+            --function-name terraform-ai-review-agent \
+            --cli-binary-format raw-in-base64-out \
+            --payload "$(jq -c '{results: .}' terrascan_report.json)" \
+            response.json
+          jq -r '.ai_review' response.json
+
+
+      - name: Format Agent Output for PR
+        id: format_agent_output
+        run: |
+          echo '## 🛡️ Terrascan & AI Agent Review' > pr_comment.txt
           echo '' >> pr_comment.txt
-          echo '<details><summary>Show full scan results</summary>' >> pr_comment.txt
+          echo '### 💰 Cost Analysis' >> pr_comment.txt
+          echo "- **Estimate:** \\$(jq -r '.cost.estimate // "N/A"' agent_output.json) \\$(jq -r '.cost.currency // ""' agent_output.json)" >> pr_comment.txt
           echo '' >> pr_comment.txt
-          echo '\`\`\`json' >> pr_comment.txt
-          cat scan.json >> pr_comment.txt || echo '{"error": "scan.json missing"}' >> pr_comment.txt
-          echo '\`\`\`' >> pr_comment.txt
-          echo '</details>' >> pr_comment.txt
-          if jq -e '.results.violations | length > 0' scan.json > /dev/null 2>&1; then
-            echo '### ❌ Violations Found:' >> pr_comment.txt
-            jq -r '.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n"' scan.json >> pr_comment.txt
-          else
-            echo '✅ No violations found.' >> pr_comment.txt
-          fi
+          echo '### 🔐 IAM Analysis' >> pr_comment.txt
+          echo "- **Risks:** \\$(jq -r '.iam.risks | join(", ") // "None"' agent_output.json)" >> pr_comment.txt
+          echo "- **Score:** \\$(jq -r '.iam.score // "N/A"' agent_output.json)" >> pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '### 🛡️ Security Analysis' >> pr_comment.txt
+          echo "- **Risk Score:** \\$(jq -r '.security.risk_score // "N/A"' agent_output.json)" >> pr_comment.txt
+          echo "- **Critical:** \\$(jq -r '.security.critical // "N/A"' agent_output.json)" >> pr_comment.txt
           echo '' >> pr_comment.txt
           echo '---' >> pr_comment.txt
-          echo '## 🤖 **Agent Output**' >> pr_comment.txt
-          if [ -f agent_output.json ]; then
-            echo '\`\`\`json' >> pr_comment.txt
-            cat agent_output.json >> pr_comment.txt
-            echo '\`\`\`' >> pr_comment.txt
-          else
-            echo 'No agent output found.' >> pr_comment.txt
-          fi
+          echo '### 🏛️ Governance Verdict' >> pr_comment.txt
+          echo "- **Verdict:** \\$(jq -r '.governance.verdict // "N/A"' agent_output.json)" >> pr_comment.txt
+          echo "- **Reason:** \\$(jq -r '.governance.reason // "N/A"' agent_output.json)" >> pr_comment.txt
       - name: Comment Results on PR
         uses: peter-evans/create-or-update-comment@v3
         with:

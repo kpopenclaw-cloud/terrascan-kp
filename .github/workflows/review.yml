@@ -1,3 +1,5 @@
+permissions:
+  pull-requests: write
 name: Terraform Multi-Agent Review
 
 on:
@@ -27,8 +29,16 @@ jobs:
            terrascan scan -i terraform -o json > scan.json
         continue-on-error: true
 
-      - name: Show Terrascan Results
-        run: cat scan.json
+
+      - name: Comment Terrascan Results on PR
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.number }}
+          body: |
+            **Terrascan Results**
+            ```
+            $(cat scan.json)
+            ```
        
 
       - name: Upload

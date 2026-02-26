@@ -105,9 +105,4 @@ jobs:
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{ github.event.number }}
-          body: |
-            ## 🤖 **Agent Output**
-            
-            ```json
-            ${{ steps.wait_sf.outputs.output_path && fromJson(steps.wait_sf.outputs.output_path) || 'No output found.' }}
-            ```
+          body-path: agent_output.json

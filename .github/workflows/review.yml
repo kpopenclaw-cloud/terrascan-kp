@@ -26,47 +26,83 @@ jobs:
           terrascan version
       - name: Run Scan
         run: |
-             terrascan scan -i terraform -o json > scan.json
-             terrascan scan -i terraform -o sarif > scan.sarif
+          terrascan scan -i terraform -o json > scan.json || true
+          # Optionally, keep SARIF for local/dev, but don't fail if missing
+          terrascan scan -i terraform -o sarif > scan.sarif || true
         continue-on-error: true
 
 
-      - name: Comment Terrascan Results on PR
+      - name: Render Terrascan and Agent Results for PR
+        id: pr_results
+        run: |
+          echo '## 🛡️ **Terrascan Results**' > pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '<details><summary>Show full scan results</summary>' >> pr_comment.txt
+          echo '' >> pr_comment.txt
+          echo '\`\`\`json' >> pr_comment.txt
+          cat scan.json >> pr_comment.txt || echo '{"error": "scan.json missing"}' >> pr_comment.txt
+          echo '\`\`\`' >> pr_comment.txt
+          echo '</details>' >> pr_comment.txt
+          if jq -e '.results.violations | length > 0' scan.json > /dev/null 2>&1; then
+            echo '### ❌ Violations Found:' >> pr_comment.txt
+            jq -r '.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n"' scan.json >> pr_comment.txt
+          else
+            echo '✅ No violations found.' >> pr_comment.txt
+          fi
+          echo '' >> pr_comment.txt
+          echo '---' >> pr_comment.txt
+          echo '## 🤖 **Agent Output**' >> pr_comment.txt
+          if [ -f agent_output.json ]; then
+            echo '\`\`\`json' >> pr_comment.txt
+            cat agent_output.json >> pr_comment.txt
+            echo '\`\`\`' >> pr_comment.txt
+          else
+            echo 'No agent output found.' >> pr_comment.txt
+          fi
+      - name: Comment Results on PR
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{ github.event.number }}
-            body: |
-              ## 🛡️ **Terrascan Results**
-            
-              <details>
-              <summary>Show full scan results</summary>
-            
-              ```json
-              $(cat scan.json)
-              ```
-              </details>
-            
-              $(jq -r '
-                if .results.violations then
-                  "### ❌ Violations Found:\n" +
-                  (.results.violations[] | "- **Rule:** " + .rule_name + "\n  **Description:** " + .description + "\n  **File:** " + .file + "\n  **Line:** " + (.line_number|tostring) + "\n  **Severity:** " + .severity + "\n")
-                else
-                  "✅ No violations found."
-                end
-              ' scan.json)
+          body-path: pr_comment.txt
        
+
 
       - name: Upload
         run: aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.event.number }}.json
 
-        - name: Upload SARIF to GitHub Code Scanning
-          uses: github/codeql-action/upload-sarif@v2
-          with:
-            sarif_file: scan.sarif
-            category: terrascan
+      # SARIF upload removed as requested
 
-      - name: Start Step Function
+      - name: Start Step Function Execution
+        id: start_sf
         run: |
-          aws stepfunctions start-execution \
-          --state-machine-arn arn:aws:states:us-east-1:998948478488:stateMachine:tf-review-state-machine \
-          --input '{"pr_number": "${{ github.event.number }}"}'
+          exec_arn=$(aws stepfunctions start-execution \
+            --state-machine-arn arn:aws:states:us-east-1:998948478488:stateMachine:tf-review-state-machine \
+            --input '{"pr_number": "${{ github.event.number }}"}' \
+            --query 'executionArn' --output text)
+          echo "execution_arn=$exec_arn" >> $GITHUB_OUTPUT
+
+      - name: Wait for Step Function to Complete
+        id: wait_sf
+        run: |
+          exec_arn="${{ steps.start_sf.outputs.execution_arn }}"
+          status="RUNNING"
+          for i in {1..60}; do
+            status=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'status' --output text)
+            if [[ "$status" != "RUNNING" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ "$status" != "SUCCEEDED" ]]; then
+            echo "Step Function execution failed or timed out: $status"
+            exit 1
+          fi
+          output=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'output' --output text)
+          echo "$output" > agent_output.json
+          echo "output_path=agent_output.json" >> $GITHUB_OUTPUT
+
+      - name: Comment Agent Output on PR
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.number }}
+          body-path: agent_output.json

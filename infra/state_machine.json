@@ -1,0 +1,36 @@
+{
+  "Comment": "Terraform Multi-Agent Review State Machine",
+  "StartAt": "CostAgent",
+  "States": {
+    "CostAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:998948478488:function:agent_cost",
+      "ResultPath": "$.costResult",
+      "Next": "IAMAgent"
+    },
+    "IAMAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:998948478488:function:agent_iam",
+      "ResultPath": "$.iamResult",
+      "Next": "SecurityAgent"
+    },
+    "SecurityAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:998948478488:function:agent_security",
+      "ResultPath": "$.securityResult",
+      "Next": "GovernanceAgent"
+    },
+    "GovernanceAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:998948478488:function:agent_governance",
+      "Parameters": {
+        "cost.$": "$.costResult.cost",
+        "iam.$": "$.iamResult.iam",
+        "security.$": "$.securityResult.security",
+        "pr_number.$": "$.pr_number"
+      },
+      "ResultPath": "$.governanceResult",
+      "End": true
+    }
+  }
+}

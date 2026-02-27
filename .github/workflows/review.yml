@@ -101,6 +101,18 @@ jobs:
           echo "$output" > agent_output.json
           echo "output_path=agent_output.json" >> $GITHUB_OUTPUT
 
+      - name: Restrict Merge if Violations or REJECT
+        run: |
+          # Block merge if Terrascan violations or agent verdict is REJECT
+          if jq -e '.results.violations | length > 0' scan.json > /dev/null 2>&1; then
+            echo "Terrascan violations found. Merge blocked."
+            exit 1
+          fi
+          if jq -e '(.governanceResult.governance.verdict // "") == "REJECT"' agent_output.json > /dev/null 2>&1; then
+            echo "Agent verdict is REJECT. Merge blocked."
+            exit 1
+          fi
+          echo "No blocking violations or REJECT verdict. Merge allowed."
       - name: Comment Agent Output on PR
         uses: peter-evans/create-or-update-comment@v3
         with:

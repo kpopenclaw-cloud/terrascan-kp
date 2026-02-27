@@ -26,7 +26,9 @@ jobs:
       - name: Run Scan
         run: |
           terrascan scan -i terraform -d infra -o json > scan.json || true
+          terrascan scan -i terraform -d demo-terraform -o json >> scan.json || true
           terrascan scan -i terraform -d infra -o sarif > scan.sarif || true
+          terrascan scan -i terraform -d demo-terraform -o sarif >> scan.sarif || true
         continue-on-error: true
       - name: Invoke Governance Agent Lambda
         id: ai_review

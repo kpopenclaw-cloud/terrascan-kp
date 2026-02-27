@@ -37,98 +37,104 @@ jobs:
             --function-name agent_governance \
             --cli-binary-format raw-in-base64-out \
             --payload "$(jq -c '{results: .}' scan.json)" \
-            response.json
-          cp response.json agent_output.json
+            review:
+              runs-on: ubuntu-latest
+              env:
+                AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                AWS_REGION: ${{ secrets.AWS_REGION }}
 
+              steps:
+                - uses: actions/checkout@v3
 
-      - name: Format Agent Output for PR
-        # id removed to avoid duplicate
-        run: |
-          echo '## 🛡️ Terrascan & AI Agent Review' > pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '### 💰 Cost Analysis' >> pr_comment.txt
-          echo "- **Estimate:** $(jq -r '.cost.estimate // \"N/A\"' agent_output.json) $(jq -r '.cost.currency // \"\"' agent_output.json)" >> pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '### 🔐 IAM Analysis' >> pr_comment.txt
-          echo "- **Risks:** $(jq -r '.iam.risks | join(\", \") // \"None\"' agent_output.json)" >> pr_comment.txt
-          echo "- **Score:** $(jq -r '.iam.score // \"N/A\"' agent_output.json)" >> pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '### 🛡️ Security Analysis' >> pr_comment.txt
-          echo "- **Risk Score:** $(jq -r '.security.risk_score // \"N/A\"' agent_output.json)" >> pr_comment.txt
-          echo "- **Critical:** $(jq -r '.security.critical // \"N/A\"' agent_output.json)" >> pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '---' >> pr_comment.txt
-          echo '### 🏛️ Governance Verdict' >> pr_comment.txt
-          echo "- **Verdict:** $(jq -r '.governance.verdict // \"N/A\"' agent_output.json)" >> pr_comment.txt
-          echo "- **Reason:** $(jq -r '.governance.reason // \"N/A\"' agent_output.json)" >> pr_comment.txt
+                - name: Install Terrascan
+                  run: |
+                    curl -L https://github.com/tenable/terrascan/releases/download/v1.18.4/terrascan_1.18.4_Linux_x86_64.tar.gz -o terrascan.tar.gz
+                    tar -xzf terrascan.tar.gz
+                    sudo mv terrascan /usr/local/bin/
+                    terrascan version
+                - name: Run Scan
+                  run: |
+                    terrascan scan -i terraform -d infra -o json > scan.json || true
+                    terrascan scan -i terraform -d demo-terraform -o json >> scan.json || true
+                    terrascan scan -i terraform -d infra -o sarif > scan.sarif || true
+                    terrascan scan -i terraform -d demo-terraform -o sarif >> scan.sarif || true
+                - name: Format Terrascan Results for PR
+                  run: |
+                    echo '## 🚦 Terrascan Findings' > pr_scan_comment.txt
+                    echo '| Rule | Description | File | Line | Severity |' >> pr_scan_comment.txt
+                    echo '|------|-------------|------|------|----------|' >> pr_scan_comment.txt
+                    jq -r '.results[]? | "| " + (.rule_name // "-") + " | " + (.description // "-") + " | " + (.file // "-") + " | " + (.line_number // "-") + " | " + (.severity // "-") + " |"' scan.json >> pr_scan_comment.txt
+                    echo '' >> pr_scan_comment.txt
+                - name: Comment Terrascan Results on PR
+                  uses: peter-evans/create-or-update-comment@v3
+                  with:
+                    issue-number: ${{ github.event.number }}
+                    body-path: pr_scan_comment.txt
 
-      - name: Comment Results on PR
-        uses: peter-evans/create-or-update-comment@v3
-        with:
-          issue-number: ${{ github.event.number }}
-          body-path: pr_comment.txt
-       
+                - name: Prevent Merge Until Scan Complete
+                  if: ${{ job.status == 'failure' }}
+                  run: exit 1
 
+                - name: Upload
+                  run: |
+                    aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.repository_owner }}/${{ github.repository }}/${{ github.event.number }}.json
+                    echo "Scan uploaded to S3 for PR ${{ github.event.number }} at path ${{ github.repository_owner }}/${{ github.repository }}/${{ github.event.number }}.json"
 
-      - name: Upload
-        run: |
-          aws s3 cp scan.json s3://tf-scan-results-10989c77/${{ github.repository_owner }}/${{ github.repository }}/${{ github.event.number }}.json
-          echo "Scan uploaded to S3 for PR ${{ github.event.number }} at path ${{ github.repository_owner }}/${{ github.repository }}/${{ github.event.number }}.json"
+                # SARIF upload removed as requested
 
-      # SARIF upload removed as requested
+                - name: Start Step Function Execution
+                  id: start_sf
+                  run: |
+                    exec_arn=$(aws stepfunctions start-execution \
+                      --state-machine-arn arn:aws:states:us-east-1:998948478488:stateMachine:tf-review-state-machine \
+                      --input '{"pr_number": "${{ github.event.number }}", "repo_owner": "${{ github.repository_owner }}", "repo_name": "${{ github.repository }}"}' \
+                      --query 'executionArn' --output text)
+                    echo "execution_arn=$exec_arn" >> $GITHUB_OUTPUT
+                    echo "Step Function started for PR ${{ github.event.number }} with ARN $exec_arn and repo ${{ github.repository_owner }}/${{ github.repository }}"
 
-      - name: Start Step Function Execution
-        id: start_sf
-        run: |
-          exec_arn=$(aws stepfunctions start-execution \
-            --state-machine-arn arn:aws:states:us-east-1:998948478488:stateMachine:tf-review-state-machine \
-            --input '{"pr_number": "${{ github.event.number }}", "repo_owner": "${{ github.repository_owner }}", "repo_name": "${{ github.repository }}"}' \
-            --query 'executionArn' --output text)
-          echo "execution_arn=$exec_arn" >> $GITHUB_OUTPUT
-          echo "Step Function started for PR ${{ github.event.number }} with ARN $exec_arn and repo ${{ github.repository_owner }}/${{ github.repository }}"
+                - name: Wait for Step Function to Complete
+                  id: wait_sf
+                  run: |
+                    exec_arn="${{ steps.start_sf.outputs.execution_arn }}"
+                    status="RUNNING"
+                    for i in {1..60}; do
+                      status=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'status' --output text)
+                      if [[ "$status" != "RUNNING" ]]; then
+                        break
+                      fi
+                      sleep 10
+                    done
+                    if [[ "$status" != "SUCCEEDED" ]]; then
+                      echo "Step Function execution failed or timed out: $status"
+                      exit 1
+                    fi
+                    output=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'output' --output text)
+                    echo "$output" > agent_output.json
+                    echo "output_path=agent_output.json" >> $GITHUB_OUTPUT
 
-      - name: Wait for Step Function to Complete
-        id: wait_sf
-        run: |
-          exec_arn="${{ steps.start_sf.outputs.execution_arn }}"
-          status="RUNNING"
-          for i in {1..60}; do
-            status=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'status' --output text)
-            if [[ "$status" != "RUNNING" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          if [[ "$status" != "SUCCEEDED" ]]; then
-            echo "Step Function execution failed or timed out: $status"
-            exit 1
-          fi
-          output=$(aws stepfunctions describe-execution --execution-arn "$exec_arn" --query 'output' --output text)
-          echo "$output" > agent_output.json
-          echo "output_path=agent_output.json" >> $GITHUB_OUTPUT
-
-      - name: Format Agent Output for PR
-        id: format_agent_output
-        run: |
-          echo '## 🛡️ Terrascan & AI Agent Review' > pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '### 🚦 Terrascan Findings' >> pr_comment.txt
-          echo '| Rule | Description | File | Line | Severity |' >> pr_comment.txt
-          echo '|------|-------------|------|------|----------|' >> pr_comment.txt
-          jq -r '.security.issues[]? | "| " + (.rule_name // "-") + " | " + (.description // "-") + " | " + (.file // "-") + " | " + (.line_number // "-") + " | " + (.severity // "-") + " |"' agent_output.json >> pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '### 💰 Cost Analysis' >> pr_comment.txt
-          echo "- **Estimate:** $(jq -r '.cost.estimate // "N/A"' agent_output.json) $(jq -r '.cost.currency // ""' agent_output.json)" >> pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '### 🔐 IAM Analysis' >> pr_comment.txt
-          echo "- **Risks:** $(jq -r '.iam.risks | join(", ") // "None"' agent_output.json)" >> pr_comment.txt
-          echo "- **Score:** $(jq -r '.iam.score // "N/A"' agent_output.json)" >> pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '### 🛡️ Security Analysis' >> pr_comment.txt
-          echo "- **Risk Score:** $(jq -r '.security.risk_score // "N/A"' agent_output.json)" >> pr_comment.txt
-          echo "- **Critical:** $(jq -r '.security.critical // "N/A"' agent_output.json)" >> pr_comment.txt
-          echo '' >> pr_comment.txt
-          echo '---' >> pr_comment.txt
-          echo '### 🏛️ Governance Verdict' >> pr_comment.txt
-          echo "- **Verdict:** $(jq -r '.governance.verdict // "N/A"' agent_output.json)" >> pr_comment.txt
-          echo "- **Reason:** $(jq -r '.governance.reason // "N/A"' agent_output.json)" >> pr_comment.txt
+                - name: Format Agent Output for PR
+                  id: format_agent_output
+                  run: |
+                    echo '## 🛡️ Terrascan & AI Agent Review' > pr_comment.txt
+                    echo '' >> pr_comment.txt
+                    echo '### 💰 Cost Analysis' >> pr_comment.txt
+                    echo "- **Estimate:** $(jq -r '.cost.estimate // \"N/A\"' agent_output.json) $(jq -r '.cost.currency // \"\"' agent_output.json)" >> pr_comment.txt
+                    echo '' >> pr_comment.txt
+                    echo '### 🔐 IAM Analysis' >> pr_comment.txt
+                    echo "- **Risks:** $(jq -r '.iam.risks | join(\", \") // \"None\"' agent_output.json)" >> pr_comment.txt
+                    echo "- **Score:** $(jq -r '.iam.score // \"N/A\"' agent_output.json)" >> pr_comment.txt
+                    echo '' >> pr_comment.txt
+                    echo '### 🛡️ Security Analysis' >> pr_comment.txt
+                    echo "- **Risk Score:** $(jq -r '.security.risk_score // \"N/A\"' agent_output.json)" >> pr_comment.txt
+                    echo "- **Critical:** $(jq -r '.security.critical // \"N/A\"' agent_output.json)" >> pr_comment.txt
+                    echo '' >> pr_comment.txt
+                    echo '---' >> pr_comment.txt
+                    echo '### 🏛️ Governance Verdict' >> pr_comment.txt
+                    echo "- **Verdict:** $(jq -r '.governance.verdict // \"N/A\"' agent_output.json)" >> pr_comment.txt
+                    echo "- **Reason:** $(jq -r '.governance.reason // \"N/A\"' agent_output.json)" >> pr_comment.txt
+                - name: Comment Results on PR
+                  uses: peter-evans/create-or-update-comment@v3
+                  with:
+                    issue-number: ${{ github.event.number }}
+                    body-path: pr_comment.txt
